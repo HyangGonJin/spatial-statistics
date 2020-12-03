@@ -1,0 +1,286 @@
+---
+title: "Spatial statistic"
+author: "HyangGon Jin"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 0. Load the Packages
+```{r, warning=F}
+# if(!requireNamespace("devtools")) install.packages("devtools")
+# devtools::install_github("dkahle/ggmap")
+# https://cloud.google.com/maps-platform/
+# 참고 : http://makehomes.kr/37/?q=YToxOntzOjEyOiJrZXl3b3JkX3R5cGUiO3M6MzoiYWxsIjt9&bmode=view&idx=1035079&t=board
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(reshape2)
+  library(GISTools)
+  library(ggmap)
+  #library(proj4)
+  library(rgdal)
+  #library(geoR)
+  #library(automap)
+  library(maptools)
+  library(gstat)
+  library(sp)
+})
+
+register_google(key='my-key')
+
+```
+
+```{r,echo=F}
+register_google(key='AIzaSyBnI09j3jCAm_bDEvN_wg5_dHmJ6lZ93x4')
+```
+
+# 1. ggplot + ggmap
+### Load the data.
+```{r,warning=F}
+wifi = read.csv("서울시_공공와이파이.csv",header=T)
+colnames(wifi) = c("gu","type","zone","lon","lat","comp")
+wifi %>% summary
+
+wifi1 = wifi %>% na.omit
+wifi1 %>% summary
+```
+
+### get_map()
+```{r,warning=F}
+
+x1.ln=wifi1$lon
+x2.lt=wifi1$lat
+x1r = range(x1.ln)
+x2r = range(x2.lt)
+mylocation=c(x1r[1]+.02,x2r[1]-.08,x1r[2]+.02,x2r[2]-.08)
+myMap <- get_map(location=mylocation, source="google", maptype="roadmap",zoom=11,color="bw") 
+#maptype : stamen, hybrid, roadmap, terrain, satellite
+ggmap(myMap)
+
+```
+
+### geom_point() 
+```{r,warning=F}
+ggmap(myMap) + geom_point(aes(x = lon, y = lat, colour=gu), 
+                         data = wifi1, alpha = .5, size = 2,shape=3) + coord_equal() 
+```
+
+### geom_point + stat_density_2d
+```{r}
+ggmap(myMap) + stat_density_2d(aes(fill=..level..),geom="polygon", data = wifi1, alpha = .2, size = 1) +
+  geom_point(aes(x=lon,y=lat),data=wifi1,alpha=0.4,color="black",size=0.5) +
+  coord_equal() + scale_fill_continuous(low = "lightseagreen",high="tomato",name="Density")
+```
+
+### facet_wrap(); with the group variables
+```{r}
+wifi2=wifi1[wifi1$comp==c("KT","LGU+","SKT"),]
+
+telecom = c("KT","LGU+","SKT")
+wifi2 = wifi1 %>% filter(comp %in% telecom) 
+ggmap(myMap) + stat_density_2d(aes(fill=..level..),geom="polygon", data = wifi2, alpha = .2, size = 1) +
+  geom_point(aes(x=lon,y=lat),data=wifi2,alpha=0.4,color="black",size=0.5) +
+  scale_fill_continuous(low = "lightseagreen",high="tomato",name="Density") + facet_wrap(~comp,ncol=3)
+```
+
+
+# 2. geom_polygon()
+```{r}
+filepath = "SIG_201703/TL_SCCO_SIG.shp"
+area = readOGR(filepath)
+
+# Rtools 35 설치 : https://cran.r-project.org/bin/windows/Rtools/
+# if (!require(gpclib)) install.packages("gpclib", type="source")
+# library(gpclib)
+# gpclibPermit()
+
+area1 = subset(area, subset = (substr(area$SIG_CD,1,2) == "11")) %>% fortify(region="SIG_KOR_NM")
+area1 %>% 
+  ggplot(aes(x = long, y = lat, group = id)) + geom_path() + theme_bw() 
+
+area11 = area1 %>% filter(id!="강서구")
+
+area11 %>% 
+  ggplot(aes(x = long, y = lat, group = id)) + geom_path() + theme_bw() 
+
+area2 = subset(area, subset = (substr(area$SIG_CD,1,4) == "1150")) %>% fortify(region="SIG_KOR_NM")
+area21 = area2[-((nrow(area2)-143):nrow(area2)),]
+
+area3=rbind(area11,area21)
+
+dat=as.data.frame(table(wifi$gu))
+colnames(dat)=c("id","Freq")
+wifi3=merge(area3,dat,by="id")
+ggplot(data = wifi3, aes(x = long, y = lat, group = id))+
+  geom_polygon(aes(fill = Freq)) + theme_bw() + geom_path() + 
+  scale_fill_continuous(low="powder blue", high ="tomato", name="Freq")
+
+
+lat=aggregate(lat~id,wifi3,mean)
+long=aggregate(long~id,wifi3,mean)
+centroid=merge(lat,long)
+centroid[12,2]<-centroid[12,2]+1000
+centroid[7,3]<-centroid[7,3]-1000
+centroid[16,3]<-centroid[16,3]+1000
+centroid[2,3]<-centroid[2,3]-1000
+centroid[15,2]<-centroid[15,2]+1000
+
+ggplot(data = wifi3, aes(x = long, y = lat, group = id))+
+  geom_polygon(aes(fill = Freq)) + geom_path() +
+  scale_fill_continuous(low="powder blue", high ="tomato", name="Freq") +
+  theme_minimal() + geom_text(aes(label=id,x=long,y=lat),data=centroid)
+```
+
+
+# 3. Real data analysis
+### Load the data
+```{r}
+data1=read.csv("spatial.csv",header=T)
+summary(data1)
+```
+
+### Merge the data with id
+```{r}
+#법정동 코드 조회: https://www.code.go.kr/index.do#
+code <- read.csv("법정동코드 조회자료/법정동코드 조회자료.csv")
+code %>% head
+
+data2 <- merge(data1,code[,c(1,4)],by="eub")
+data2 %>% head
+```
+
+### Regression
+```{r}
+set.seed(1234)
+ind=sample(x=2,nrow(data2),replace=T,prob=c(0.04,0.96))
+traindata=data2[ind==1,]
+testdata=data2[ind==2,]
+
+
+traindata=transform(traindata, y_log = log(y))
+
+
+fit=lm(y_log~x1+x2+x3+x4+x5+x6+factor(x7), data=traindata)
+summary(fit) 
+
+
+#ncvTest(fit)
+#shapiro.test(residuals(fit)) 
+
+
+traindata$resid=residuals(fit)
+
+```
+
+
+### get_map()
+```{r,warning=F}
+x1.ln=data2$LON
+x2.lt=data2$LAT
+x1r = range(x1.ln)
+x2r = range(x2.lt)
+mylocation=c(x1r[1],x2r[1],x1r[2],x2r[2])
+
+myMap=get_map(location= mylocation, source="google", maptype="roadmap", crop=FALSE, zoom=11) 
+ggmap(myMap)
+```
+
+### Empirical variogram
+```{r}
+coordinates(traindata) <- ~ LON + LAT 
+
+dvgm <- variogram(resid~1, data=traindata)
+plot(dvgm)
+
+dfit <- fit.variogram(dvgm, model=vgm(0.01, "Mat", 0.03, 0.1)) # fit model
+dfit
+plot(dvgm,dfit)
+```
+
+### Kriging
+```{r}
+#kriging
+coordinates(testdata) <- ~ LON + LAT 
+
+dkriged <- krige(resid~1, traindata, testdata, model=dfit)
+```
+
+### Plot
+```{r,warning=F}
+dk=as.data.frame(dkriged)
+dk %>% head
+
+#plot kriging image
+testdat=as.data.frame(testdata)
+
+testdat$pred.resid=dk$var1.pred
+
+testdat$pred.reg=exp(predict(fit,newdata=testdat))
+testdat$pred.reg1=predict(fit,newdata=testdat)
+
+test.dat=merge(testdat,dk,by=c("LON","LAT"))
+
+test.dat$pred.val=exp(test.dat$pred.resid+test.dat$pred.reg1)
+
+plot1=ggmap(myMap)+geom_point(aes(x = LON, y = LAT, colour=pred.val), 
+                              data = test.dat, alpha = .8, size = 0.5) + coord_equal() + 
+  ggtitle("Predicted value") + theme(plot.title = element_text(hjust = 0.5)) + 
+  scale_colour_continuous(low = "skyblue",high="red",name="Pred. value")
+
+plot1
+
+plot2=ggmap(myMap)+geom_point(aes(x = LON, y = LAT, color=var1.var), 
+                              data = test.dat, alpha = .8, size = 0.5) + coord_equal() + 
+  ggtitle("Predicted variance") + theme(plot.title = element_text(hjust = 0.5)) + 
+  scale_colour_continuous(low = "lightseagreen",high="red",name="Pred. Var")
+
+plot2
+
+
+
+area1 <- readOGR("emd(shp)/TL_SCCO_EMD.shp")
+area1 <- subset(area1, subset = (substr(area1$EMD_CD,1,4) == "4817"))
+area11<-fortify(area1, region = "EMD_CD")
+area12<-subset(area11,subset=area11$id <= 48170137 )
+area12$id<-gsub(" ","",paste(area12$id,"00"))
+
+area2 <- readOGR("li(shp)/TL_SCCO_LI.shp")
+area2 <- subset(area2, subset = (substr(area2$LI_CD,1,4) == "4817"))
+area22=fortify(area2, region = "LI_CD")
+
+plot(area1)
+plot(area2)
+
+area3=rbind(area12,area22)
+
+avg.mean=aggregate(pred.val~id,test.dat,mean)
+dat=merge(avg.mean,area3,by="id")
+
+ggplot(data = dat, aes(x = long, y = lat, group = id))+
+  geom_polygon(aes(fill = dat$pred.val),colour="black")+ theme_bw() + geom_path() +
+  scale_fill_continuous(low="lightskyblue", high ="red",name="Average value")
+
+dat=merge(aggregate(pred.val~id,test.dat,median),area3,by="id")
+cutpoint=cut(dat$pred.val,breaks=c(6,26,43,136,1524))
+dat$grp=as.factor(cutpoint)
+
+ggplot(data = dat, aes(x = long, y = lat, group = id))+
+  geom_polygon(aes(fill = grp),colour="black") + 
+  scale_fill_manual(values=c('steelblue','white','white','firebrick'),
+                    name="Pred. value") + theme_bw() + geom_path() +
+  ggtitle("") + theme(plot.title = element_text(hjust = 0.5,size=15))
+```
+
+
+
